@@ -7,7 +7,7 @@ Buildpack pour télécharger, installer et configurer Nextcloud sur Scalingo Paa
 Dans votre fichier `.buildpacks` :
 ```
 https://github.com/Scalingo/apt-buildpack.git
-https://github.com/benviaud/nextcloud-downloader-buildpack.git#<commit>
+https://github.com/Beneylu/scalingo-nextcloud-buildpack.git
 https://github.com/Scalingo/php-buildpack.git
 ```
 
