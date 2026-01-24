@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUILD_DIR="${1:?build dir missing}"
+CACHE_DIR="${2:?cache dir missing}"
+ENV_DIR="${3:?env dir missing}"
+
+log() { echo "[nextcloud-downloader] $*"; }
+
+# Load env vars
+if [[ -d "$ENV_DIR" ]]; then
+  for e in "$ENV_DIR"/*; do
+    [[ -f "$e" ]] || continue
+    export "$(basename "$e")"="$(cat "$e")"
+  done
+fi
+
+: "${NEXTCLOUD_VERSION:?NEXTCLOUD_VERSION is required}"
+
+BASE_URL="https://download.nextcloud.com/server/releases"
+ARCHIVE="nextcloud-${NEXTCLOUD_VERSION}.tar.bz2"
+
+log "Downloading Nextcloud ${NEXTCLOUD_VERSION}"
+
+mkdir -p "$CACHE_DIR"
+cd "$CACHE_DIR"
+
+if [[ ! -f "$ARCHIVE" ]]; then
+  curl -fSL "${BASE_URL}/${ARCHIVE}" -o "$ARCHIVE"
+fi
+
+log "Installing Nextcloud into build dir"
+rm -rf "${BUILD_DIR:?}/"*
+tar -xjf "$ARCHIVE"
+cp -a nextcloud/. "$BUILD_DIR"/
+rm -rf nextcloud
+
+# Prevent Node installation
+rm -f "$BUILD_DIR/package.json" "$BUILD_DIR/package-lock.json" || true
+rm -rf "$BUILD_DIR/node_modules" || true
+
+# Remove CAN_INSTALL to prevent install UI
+rm -f "$BUILD_DIR/config/CAN_INSTALL"
+
+# Install ONLYOFFICE app into /app/apps (required for /apps/onlyoffice/empty)
+ONLYOFFICE_APP_VERSION="${ONLYOFFICE_APP_VERSION:-9.12.0}"
+ONLYOFFICE_APP_URL="https://github.com/ONLYOFFICE/onlyoffice-nextcloud/releases/download/v${ONLYOFFICE_APP_VERSION}/onlyoffice.tar.gz"
+ONLYOFFICE_APP_ARCHIVE="${CACHE_DIR}/onlyoffice-${ONLYOFFICE_APP_VERSION}.tar.gz"
+
+log "Preparing ONLYOFFICE app v${ONLYOFFICE_APP_VERSION}"
+if [[ -f "${ONLYOFFICE_APP_ARCHIVE}" ]]; then
+  log "Using cached ONLYOFFICE app: ${ONLYOFFICE_APP_ARCHIVE}"
+else
+  log "Downloading ONLYOFFICE app from ${ONLYOFFICE_APP_URL}"
+  if ! curl -fsSL -o "${ONLYOFFICE_APP_ARCHIVE}" "${ONLYOFFICE_APP_URL}"; then
+    log "WARNING: Failed to download ONLYOFFICE app archive"
+  fi
+fi
+
+if [[ -f "${ONLYOFFICE_APP_ARCHIVE}" ]]; then
+  log "Extracting ONLYOFFICE app into ${BUILD_DIR}/apps/onlyoffice"
+  mkdir -p "${BUILD_DIR}/apps/onlyoffice"
+  if ! tar -xzf "${ONLYOFFICE_APP_ARCHIVE}" -C "${BUILD_DIR}/apps/onlyoffice" --strip-components=1; then
+    log "WARNING: Failed to extract ONLYOFFICE app"
+  fi
+fi
+
+# Nginx config
+mkdir -p "$BUILD_DIR/etc"
+cat > "$BUILD_DIR/etc/nginx-nextcloud.conf" <<'NGINX'
+location ^~ /index.php {
+    fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root/index.php;
+    fastcgi_param SCRIPT_NAME     /index.php;
+    fastcgi_param PATH_INFO       $fastcgi_path_info;
+    fastcgi_param HTTPS on;
+    fastcgi_pass unix:/tmp/php-fpm.sock;
+}
+
+location ^~ /remote.php {
+    fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root/remote.php;
+    fastcgi_param SCRIPT_NAME     /remote.php;
+    fastcgi_param PATH_INFO       $fastcgi_path_info;
+    fastcgi_param HTTPS on;
+    fastcgi_pass unix:/tmp/php-fpm.sock;
+}
+
+location ^~ /ocs/ {
+    fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    fastcgi_param PATH_INFO       $fastcgi_path_info;
+    fastcgi_param HTTPS on;
+    fastcgi_pass unix:/tmp/php-fpm.sock;
+}
+
+location ^~ /config/ { deny all; }
+location ^~ /data/ { deny all; }
+location ~ /\.(?!well-known).* { deny all; }
+NGINX
+
+# Update composer.json
+if command -v jq >/dev/null 2>&1 && [[ -f "$BUILD_DIR/composer.json" ]]; then
+  jq '(.extra //= {}) | (.extra.paas //= {}) | .extra.paas["nginx-includes"]=["etc/nginx-nextcloud.conf"]' \
+    "$BUILD_DIR/composer.json" > "$BUILD_DIR/composer.json.tmp"
+  mv "$BUILD_DIR/composer.json.tmp" "$BUILD_DIR/composer.json"
+fi
+
+# Bootstrap script - runs at container start
+mkdir -p "$BUILD_DIR/.profile.d"
+cat > "$BUILD_DIR/.profile.d/00-nextcloud-bootstrap.sh" <<'BOOTSCRIPT'
+#!/usr/bin/env bash
+
+# Don't fail on errors - this is sourced, not executed
+set +e
+
+# Fix for apt buildpack
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+
+echo "[nextcloud] Bootstrap starting..."
+
+CONFIG_DIR="/app/config"
+DATA_DIR="/tmp/nextcloud-data"
+CONFIG_FILE="$CONFIG_DIR/config.php"
+
+mkdir -p "$DATA_DIR"
+echo "# Nextcloud data directory" > "$DATA_DIR/.ncdata"
+
+# ============================================
+# S3 Configuration (REQUIRED)
+# ============================================
+echo "[nextcloud] Checking S3 configuration..."
+
+S3_BUCKET="${SCALEWAY_S3_BUCKET:-}"
+S3_KEY="${SCALEWAY_ACCESS_KEY:-}"
+S3_SECRET="${SCALEWAY_SECRET_KEY:-}"
+S3_REGION="${SCALEWAY_S3_REGION:-fr-par}"
+S3_HOSTNAME="${SCALEWAY_S3_HOSTNAME:-s3.fr-par.scw.cloud}"
+
+if [[ -z "$S3_BUCKET" ]] || [[ -z "$S3_KEY" ]] || [[ -z "$S3_SECRET" ]]; then
+  echo "[nextcloud] ERROR: S3 configuration is REQUIRED"
+  echo "[nextcloud] Missing variables:"
+  [[ -z "$S3_BUCKET" ]] && echo "[nextcloud]   - SCALEWAY_S3_BUCKET"
+  [[ -z "$S3_KEY" ]] && echo "[nextcloud]   - SCALEWAY_ACCESS_KEY"
+  [[ -z "$S3_SECRET" ]] && echo "[nextcloud]   - SCALEWAY_SECRET_KEY"
+  return 1 2>/dev/null || exit 1
+fi
+
+echo "[nextcloud] S3 bucket: $S3_BUCKET @ $S3_HOSTNAME ($S3_REGION)"
+
+# Check if already installed
+if [[ -f "$CONFIG_FILE" ]] && grep -q "'installed' => true" "$CONFIG_FILE" 2>/dev/null; then
+  echo "[nextcloud] Already installed, skipping bootstrap"
+  return 0 2>/dev/null || exit 0
+fi
+
+echo "[nextcloud] Config not found, checking database..."
+
+# Get database URL
+export DB_URL="${DATABASE_URL:-${SCALINGO_POSTGRESQL_URL:-}}"
+if [[ -z "$DB_URL" ]]; then
+  echo "[nextcloud] ERROR: No database URL"
+  return 1 2>/dev/null || exit 1
+fi
+
+# Parse database URL
+PHP_BIN="/app/vendor/php/bin/php"
+
+eval "$("$PHP_BIN" -r '
+  $u = getenv("DB_URL");
+  if (!$u) { echo "echo ERROR_NO_URL; exit 1;"; exit(1); }
+  $p = parse_url($u);
+  if (!$p || empty($p["host"])) { echo "echo ERROR_PARSE; exit 1;"; exit(1); }
+  echo "DB_HOST=" . escapeshellarg($p["host"] ?? "") . "\n";
+  echo "DB_PORT=" . escapeshellarg((string)($p["port"] ?? 5432)) . "\n";
+  echo "DB_USER=" . escapeshellarg($p["user"] ?? "") . "\n";
+  echo "DB_PASS=" . escapeshellarg($p["pass"] ?? "") . "\n";
+  echo "DB_NAME=" . escapeshellarg(ltrim($p["path"] ?? "", "/")) . "\n";
+')" || {
+  echo "[nextcloud] ERROR: Failed to parse DB URL"
+  return 1 2>/dev/null || exit 1
+}
+
+echo "[nextcloud] Database: $DB_NAME @ $DB_HOST:$DB_PORT"
+DOMAIN="${NEXTCLOUD_TRUSTED_DOMAIN:-localhost}"
+
+# Check if tables exist (means previous installation)
+echo "[nextcloud] Checking if Nextcloud tables exist..."
+HAS_TABLES=$("$PHP_BIN" -r "
+  try {
+    \$pdo = new PDO('pgsql:host=${DB_HOST};port=${DB_PORT};dbname=${DB_NAME};sslmode=require', '${DB_USER}', '${DB_PASS}');
+    \$result = \$pdo->query(\"SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='oc_users' LIMIT 1\");
+    echo \$result->fetchColumn() ? 'yes' : 'no';
+  } catch (Exception \$e) { echo 'no'; }
+" 2>/dev/null || echo "no")
+
+echo "[nextcloud] Tables exist: $HAS_TABLES"
+
+if [[ "$HAS_TABLES" == "yes" ]]; then
+  # REDEPLOYMENT: Tables exist, rebuild config.php from secrets
+  echo "[nextcloud] =========================================="
+  echo "[nextcloud] REDEPLOYMENT DETECTED - Tables exist"
+  echo "[nextcloud] =========================================="
+  
+  if [[ -z "${NEXTCLOUD_PASSWORDSALT:-}" ]] || [[ -z "${NEXTCLOUD_SECRET:-}" ]]; then
+    echo "[nextcloud] ERROR: Tables exist but secrets not configured!"
+    echo "[nextcloud] Set NEXTCLOUD_PASSWORDSALT and NEXTCLOUD_SECRET env vars"
+    return 1 2>/dev/null || exit 1
+  fi
+  
+  # Generate instanceid if not provided
+  INSTANCEID="${NEXTCLOUD_INSTANCEID:-oc$(head /dev/urandom | tr -dc 'a-z0-9' | head -c 10)}"
+  
+  echo "[nextcloud] Rebuilding config.php from secrets..."
+  cat > "$CONFIG_FILE" <<PHPCFG
+<?php
+\$CONFIG = array (
+  'instanceid' => '${INSTANCEID}',
+  'passwordsalt' => '${NEXTCLOUD_PASSWORDSALT}',
+  'secret' => '${NEXTCLOUD_SECRET}',
+  'trusted_domains' => array(0 => '${DOMAIN}'),
+  'datadirectory' => '${DATA_DIR}',
+  'dbtype' => 'pgsql',
+  'dbname' => '${DB_NAME}',
+  'dbhost' => '${DB_HOST}:${DB_PORT}',
+  'dbuser' => '${DB_USER}',
+  'dbpassword' => '${DB_PASS}',
+  'dbtableprefix' => 'oc_',
+  'overwrite.cli.url' => 'https://${DOMAIN}',
+  'overwriteprotocol' => 'https',
+  'installed' => true,
+  'maintenance' => false,
+  'loglevel' => 2,
+  'version' => '32.0.5.0',
+  'objectstore' => array(
+    'class' => '\\\\OC\\\\Files\\\\ObjectStore\\\\S3',
+    'arguments' => array(
+      'bucket' => '${S3_BUCKET}',
+      'key' => '${S3_KEY}',
+      'secret' => '${S3_SECRET}',
+      'hostname' => '${S3_HOSTNAME}',
+      'port' => 443,
+      'use_ssl' => true,
+      'region' => '${S3_REGION}',
+      'use_path_style' => false,
+      'autocreate' => false,
+    ),
+  ),
+);
+PHPCFG
+  
+  echo "[nextcloud] Config rebuilt with S3 storage!"
+  echo "[nextcloud] Bootstrap done (redeployment)"
+
+else
+  # FRESH INSTALL: No tables, run maintenance:install
+  echo "[nextcloud] =========================================="
+  echo "[nextcloud] FRESH INSTALL - No tables found"
+  echo "[nextcloud] =========================================="
+  
+  # Remove any existing config.php
+  rm -f "$CONFIG_FILE" 2>/dev/null || true
+  
+  echo "[nextcloud] Launching background installer..."
+  
+  # Run installation in background (won't block boot)
+  (
+    sleep 5  # Wait for nginx to start
+    
+    echo "[nextcloud-bg] Starting fresh installation..."
+    
+    # Wait for DB
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      if "$PHP_BIN" -r "new PDO('pgsql:host=${DB_HOST};port=${DB_PORT};dbname=${DB_NAME}', '${DB_USER}', '${DB_PASS}');" 2>/dev/null; then
+        break
+      fi
+      sleep 2
+    done
+    
+    # Run maintenance:install to create tables
+    echo "[nextcloud-bg] Running maintenance:install..."
+    "$PHP_BIN" /app/occ maintenance:install \
+      --database "pgsql" \
+      --database-host "${DB_HOST}:${DB_PORT}" \
+      --database-name "$DB_NAME" \
+      --database-user "$DB_USER" \
+      --database-pass "$DB_PASS" \
+      --admin-user "${NEXTCLOUD_ADMIN_USER:-admin}" \
+      --admin-pass "${NEXTCLOUD_ADMIN_PASSWORD:-admin}" \
+      --data-dir "$DATA_DIR" \
+      --no-interaction 2>&1 || echo "[nextcloud-bg] install command finished"
+    
+    # Ensure config has correct values
+    "$PHP_BIN" /app/occ config:system:set trusted_domains 0 --value="$DOMAIN" 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set overwriteprotocol --value="https" 2>/dev/null || true
+    "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
+    
+    # Add S3 objectstore configuration
+    echo "[nextcloud-bg] Configuring S3 storage..."
+    "$PHP_BIN" -r "
+      \$configFile = '${CONFIG_FILE}';
+      require \$configFile;
+      \$CONFIG['objectstore'] = [
+        'class' => '\\\\OC\\\\Files\\\\ObjectStore\\\\S3',
+        'arguments' => [
+          'bucket' => '${S3_BUCKET}',
+          'key' => '${S3_KEY}',
+          'secret' => '${S3_SECRET}',
+          'hostname' => '${S3_HOSTNAME}',
+          'port' => 443,
+          'use_ssl' => true,
+          'region' => '${S3_REGION}',
+          'use_path_style' => false,
+          'autocreate' => false,
+        ],
+      ];
+      file_put_contents(\$configFile, '<?php' . PHP_EOL . '\$CONFIG = ' . var_export(\$CONFIG, true) . ';' . PHP_EOL);
+      echo 'S3 configuration added to config.php';
+    " 2>&1 || echo "[nextcloud-bg] WARNING: Failed to add S3 config"
+    
+    echo "[nextcloud-bg] =========================================="
+    echo "[nextcloud-bg] IMPORTANT: Save these secrets for redeployment!"
+    echo "[nextcloud-bg] =========================================="
+    grep -E "(instanceid|passwordsalt|secret)" "$CONFIG_FILE" | head -3 || true
+    echo "[nextcloud-bg] =========================================="
+    echo "[nextcloud-bg] Add these as env vars:"
+    echo "[nextcloud-bg]   NEXTCLOUD_PASSWORDSALT"
+    echo "[nextcloud-bg]   NEXTCLOUD_SECRET"
+    echo "[nextcloud-bg] =========================================="
+    
+    echo "[nextcloud-bg] Installation complete with S3 storage!"
+    
+  ) >> /tmp/nextcloud-bg.log 2>&1 &
+  
+  echo "[nextcloud] Background installer started (PID: $!)"
+  echo "[nextcloud] Bootstrap done (fresh install)"
+fi
+BOOTSCRIPT
+
+chmod +x "$BUILD_DIR/.profile.d/00-nextcloud-bootstrap.sh"
+
+log "Done!"

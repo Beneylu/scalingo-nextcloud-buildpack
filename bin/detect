@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "Nextcloud downloader buildpack"
+exit 0
