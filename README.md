@@ -42,16 +42,74 @@ Après la première installation, sauvegarder et configurer :
 ### Auto-fournies par Scalingo
 - `SCALINGO_POSTGRESQL_URL` - Base de données
 
+### user_oidc (optionnel)
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
+| `USER_OIDC_APP_VERSION` | Version de l'app `user_oidc` à pré-installer | `8.8.0` |
+
+### Provisioning automatique du provider OIDC
+
+Si les quatre variables obligatoires ci-dessous sont définies, le provider OIDC est automatiquement créé ou mis à jour à chaque démarrage (idempotent).
+
+**Variables obligatoires** (si absentes, le provisioning est simplement ignoré) :
+
+| Variable | Description |
+|----------|-------------|
+| `OIDC_PROVIDER_IDENTIFIER` | Identifiant du provider dans Nextcloud |
+| `OIDC_CLIENT_ID` | Client ID OAuth2 |
+| `OIDC_CLIENT_SECRET` | Client secret OAuth2 |
+| `OIDC_DISCOVERY_URI` | URL du document de découverte OIDC |
+
+**Variables optionnelles** :
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
+| `OIDC_SCOPE` | Scopes demandés | `openid` |
+| `OIDC_MAPPING_UID` | Claim utilisé comme identifiant Nextcloud | `sub` |
+| `OIDC_EXTRA_CLAIMS` | Claims supplémentaires à transmettre | _(vide)_ |
+| `OIDC_UNIQUE_UID` | UID unique entre providers | `1` |
+| `OIDC_CHECK_BEARER` | Vérifier le Bearer token | `0` |
+| `OIDC_SEND_ID_TOKEN_HINT` | Envoyer l'ID token hint à la déconnexion | `0` |
+
+**Exemple de configuration** :
+
+```
+OIDC_PROVIDER_IDENTIFIER=example
+OIDC_CLIENT_ID=your-client-id
+OIDC_CLIENT_SECRET=your-client-secret
+OIDC_DISCOVERY_URI=https://example.com/.well-known/openid-configuration
+OIDC_SCOPE=openid
+OIDC_MAPPING_UID=sub
+```
+
 ## Ce que fait le buildpack
 
 1. **Télécharge** Nextcloud depuis le site officiel
 2. **Extrait** et installe dans `/app`
-3. **Pré-installe** l'application OnlyOffice
+3. **Pré-installe** les applications OnlyOffice et `user_oidc`
 4. **Configure** nginx pour Nextcloud
 5. **Bootstrap** automatique au démarrage :
    - Détection fresh install vs redéploiement
    - Configuration S3 automatique
    - Création des tables si nécessaire
+   - Activation et configuration de `user_oidc`
+
+## Authentification OIDC
+
+Le buildpack pré-installe l'application [`user_oidc`](https://github.com/nextcloud/user_oidc) et l'active automatiquement au démarrage.
+
+Les réglages suivants sont appliqués à chaque démarrage :
+
+| Clé | Valeur | Effet |
+|-----|--------|-------|
+| `enable_default_claims` | `false` | Désactive le mapping automatique des claims par défaut |
+| `enrich_login_id_token_with_userinfo` | `true` | Enrichit le token avec les infos de l'endpoint userinfo |
+| `send_userinfo_claims` | `false` | Ne retransmet pas les claims userinfo lors des requêtes sortantes |
+
+> Si les variables `OIDC_PROVIDER_IDENTIFIER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` et `OIDC_DISCOVERY_URI` sont définies,
+> le provider est provisionné automatiquement à chaque démarrage via `occ user_oidc:provider` (idempotent).
+> Voir la section [Provisioning automatique du provider OIDC](#provisioning-automatique-du-provider-oidc) ci-dessus.
 
 ## Structure
 
