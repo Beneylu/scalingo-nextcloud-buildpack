@@ -310,7 +310,8 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
   'overwriteprotocol' => 'https',
   'installed' => true,
   'maintenance' => false,
-  'loglevel' => 2,
+  'loglevel' => 0,
+  'log_type' => 'errorlog',
   'version' => '32.0.5.0',
   'objectstore' => array(
     'class' => '\\\\OC\\\\Files\\\\ObjectStore\\\\S3',
@@ -375,6 +376,8 @@ else
     # Ensure config has correct values
     "$PHP_BIN" /app/occ config:system:set trusted_domains 0 --value="$DOMAIN" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set overwriteprotocol --value="https" 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set log_type --value="errorlog" 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
     configure_user_oidc
     provision_user_oidc_provider
