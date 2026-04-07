@@ -65,6 +65,29 @@ if [[ -f "${ONLYOFFICE_APP_ARCHIVE}" ]]; then
   fi
 fi
 
+# Install user_oidc app
+USER_OIDC_APP_VERSION="${USER_OIDC_APP_VERSION:-8.8.0}"
+USER_OIDC_APP_URL="https://github.com/nextcloud-releases/user_oidc/releases/download/v${USER_OIDC_APP_VERSION}/user_oidc-v${USER_OIDC_APP_VERSION}.tar.gz"
+USER_OIDC_APP_ARCHIVE="${CACHE_DIR}/user_oidc-${USER_OIDC_APP_VERSION}.tar.gz"
+
+log "Preparing user_oidc app v${USER_OIDC_APP_VERSION}"
+if [[ -f "${USER_OIDC_APP_ARCHIVE}" ]]; then
+  log "Using cached user_oidc app: ${USER_OIDC_APP_ARCHIVE}"
+else
+  log "Downloading user_oidc app from ${USER_OIDC_APP_URL}"
+  if ! curl -fsSL -o "${USER_OIDC_APP_ARCHIVE}" "${USER_OIDC_APP_URL}"; then
+    log "WARNING: Failed to download user_oidc app archive"
+  fi
+fi
+
+if [[ -f "${USER_OIDC_APP_ARCHIVE}" ]]; then
+  log "Extracting user_oidc app into ${BUILD_DIR}/apps/user_oidc"
+  mkdir -p "${BUILD_DIR}/apps/user_oidc"
+  if ! tar -xzf "${USER_OIDC_APP_ARCHIVE}" -C "${BUILD_DIR}/apps/user_oidc" --strip-components=1; then
+    log "WARNING: Failed to extract user_oidc app"
+  fi
+fi
+
 # Nginx config
 mkdir -p "$BUILD_DIR/etc"
 cat > "$BUILD_DIR/etc/nginx-nextcloud.conf" <<'NGINX'
@@ -199,6 +222,21 @@ HAS_TABLES=$("$PHP_BIN" -r "
 
 echo "[nextcloud] Tables exist: $HAS_TABLES"
 
+# ============================================
+# user_oidc configuration
+# ============================================
+configure_user_oidc() {
+  echo "[nextcloud] Enabling and configuring user_oidc app..."
+  if ! "$PHP_BIN" /app/occ app:enable user_oidc 2>/dev/null; then
+    echo "[nextcloud] WARNING: Could not enable user_oidc app, skipping"
+    return 0
+  fi
+  "$PHP_BIN" /app/occ config:app:set user_oidc enable_default_claims --type=boolean --value=false 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:app:set user_oidc enrich_login_id_token_with_userinfo --type=boolean --value=true 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:app:set user_oidc send_userinfo_claims --type=boolean --value=false 2>/dev/null || true
+  echo "[nextcloud] user_oidc configured"
+}
+
 if [[ "$HAS_TABLES" == "yes" ]]; then
   # REDEPLOYMENT: Tables exist, rebuild config.php from secrets
   echo "[nextcloud] =========================================="
@@ -253,6 +291,7 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
 PHPCFG
   
   echo "[nextcloud] Config rebuilt with S3 storage!"
+  configure_user_oidc
   echo "[nextcloud] Bootstrap done (redeployment)"
 
 else
@@ -297,6 +336,7 @@ else
     "$PHP_BIN" /app/occ config:system:set trusted_domains 0 --value="$DOMAIN" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set overwriteprotocol --value="https" 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
+    configure_user_oidc
     
     # Add S3 objectstore configuration
     echo "[nextcloud-bg] Configuring S3 storage..."

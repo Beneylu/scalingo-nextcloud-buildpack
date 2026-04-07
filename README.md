@@ -42,16 +42,38 @@ Après la première installation, sauvegarder et configurer :
 ### Auto-fournies par Scalingo
 - `SCALINGO_POSTGRESQL_URL` - Base de données
 
+### user_oidc (optionnel)
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
+| `USER_OIDC_APP_VERSION` | Version de l'app `user_oidc` à pré-installer | `8.8.0` |
+
 ## Ce que fait le buildpack
 
 1. **Télécharge** Nextcloud depuis le site officiel
 2. **Extrait** et installe dans `/app`
-3. **Pré-installe** l'application OnlyOffice
+3. **Pré-installe** les applications OnlyOffice et `user_oidc`
 4. **Configure** nginx pour Nextcloud
 5. **Bootstrap** automatique au démarrage :
    - Détection fresh install vs redéploiement
    - Configuration S3 automatique
    - Création des tables si nécessaire
+   - Activation et configuration de `user_oidc`
+
+## Authentification OIDC
+
+Le buildpack pré-installe l'application [`user_oidc`](https://github.com/nextcloud/user_oidc) et l'active automatiquement au démarrage.
+
+Les réglages suivants sont appliqués à chaque démarrage :
+
+| Clé | Valeur | Effet |
+|-----|--------|-------|
+| `enable_default_claims` | `false` | Désactive le mapping automatique des claims par défaut |
+| `enrich_login_id_token_with_userinfo` | `true` | Enrichit le token avec les infos de l'endpoint userinfo |
+| `send_userinfo_claims` | `false` | Ne retransmet pas les claims userinfo lors des requêtes sortantes |
+
+> La configuration d'un provider OIDC (client ID, secret, discovery URL…) n'est pas encore automatisée.
+> Elle doit être effectuée manuellement via l'interface d'administration ou `occ`.
 
 ## Structure
 
