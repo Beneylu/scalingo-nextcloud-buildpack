@@ -237,6 +237,45 @@ configure_user_oidc() {
   echo "[nextcloud] user_oidc configured"
 }
 
+# ============================================
+# OIDC provider provisioning (optional)
+# ============================================
+provision_user_oidc_provider() {
+  local identifier="${OIDC_PROVIDER_IDENTIFIER:-}"
+  local client_id="${OIDC_CLIENT_ID:-}"
+  local client_secret="${OIDC_CLIENT_SECRET:-}"
+  local discovery_uri="${OIDC_DISCOVERY_URI:-}"
+
+  if [[ -z "$identifier" ]] || [[ -z "$client_id" ]] || [[ -z "$client_secret" ]] || [[ -z "$discovery_uri" ]]; then
+    echo "[nextcloud] OIDC provider provisioning skipped (OIDC_PROVIDER_IDENTIFIER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_DISCOVERY_URI requis)"
+    return 0
+  fi
+
+  local scope="${OIDC_SCOPE:-openid}"
+  local mapping_uid="${OIDC_MAPPING_UID:-sub}"
+  local extra_claims="${OIDC_EXTRA_CLAIMS:-}"
+  local unique_uid="${OIDC_UNIQUE_UID:-1}"
+  local check_bearer="${OIDC_CHECK_BEARER:-0}"
+  local send_id_token_hint="${OIDC_SEND_ID_TOKEN_HINT:-0}"
+
+  echo "[nextcloud] Provisioning OIDC provider: $identifier (discovery: $discovery_uri)..."
+  if "$PHP_BIN" /app/occ user_oidc:provider "$identifier" \
+      --clientid="$client_id" \
+      --clientsecret="$client_secret" \
+      --discoveryuri="$discovery_uri" \
+      --scope="$scope" \
+      --mapping-uid="$mapping_uid" \
+      --extra-claims="$extra_claims" \
+      --unique-uid="$unique_uid" \
+      --check-bearer="$check_bearer" \
+      --send-id-token-hint="$send_id_token_hint" \
+      2>/dev/null; then
+    echo "[nextcloud] OIDC provider provisionné : $identifier"
+  else
+    echo "[nextcloud] WARNING: Echec du provisioning OIDC provider (user_oidc disponible ?)"
+  fi
+}
+
 if [[ "$HAS_TABLES" == "yes" ]]; then
   # REDEPLOYMENT: Tables exist, rebuild config.php from secrets
   echo "[nextcloud] =========================================="
@@ -292,6 +331,7 @@ PHPCFG
   
   echo "[nextcloud] Config rebuilt with S3 storage!"
   configure_user_oidc
+  provision_user_oidc_provider
   echo "[nextcloud] Bootstrap done (redeployment)"
 
 else
@@ -337,6 +377,7 @@ else
     "$PHP_BIN" /app/occ config:system:set overwriteprotocol --value="https" 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
     configure_user_oidc
+    provision_user_oidc_provider
     
     # Add S3 objectstore configuration
     echo "[nextcloud-bg] Configuring S3 storage..."
