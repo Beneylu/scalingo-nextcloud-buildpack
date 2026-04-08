@@ -123,6 +123,13 @@ location ^~ /ocs/ {
 location ^~ /config/ { deny all; }
 location ^~ /data/ { deny all; }
 location ~ /\.(?!well-known).* { deny all; }
+
+# explicitly set some mime types
+location ~ \.mjs$ {
+    types {
+        application/javascript mjs;
+    }
+}
 NGINX
 
 # Update composer.json
@@ -324,16 +331,16 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
   echo "[nextcloud] =========================================="
   echo "[nextcloud] REDEPLOYMENT DETECTED - Tables exist"
   echo "[nextcloud] =========================================="
-  
+
   if [[ -z "${NEXTCLOUD_PASSWORDSALT:-}" ]] || [[ -z "${NEXTCLOUD_SECRET:-}" ]]; then
     echo "[nextcloud] ERROR: Tables exist but secrets not configured!"
     echo "[nextcloud] Set NEXTCLOUD_PASSWORDSALT and NEXTCLOUD_SECRET env vars"
     return 1 2>/dev/null || exit 1
   fi
-  
+
   # Generate instanceid if not provided
   INSTANCEID="${NEXTCLOUD_INSTANCEID:-oc$(head /dev/urandom | tr -dc 'a-z0-9' | head -c 10)}"
-  
+
   echo "[nextcloud] Rebuilding config.php from secrets..."
   cat > "$CONFIG_FILE" <<PHPCFG
 <?php
@@ -378,7 +385,7 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
   ),
 );
 PHPCFG
-  
+
   echo "[nextcloud] Config rebuilt with S3 storage!"
   configure_user_oidc
   enable_logreader_if_present
@@ -390,18 +397,18 @@ else
   echo "[nextcloud] =========================================="
   echo "[nextcloud] FRESH INSTALL - No tables found"
   echo "[nextcloud] =========================================="
-  
+
   # Remove any existing config.php
   rm -f "$CONFIG_FILE" 2>/dev/null || true
-  
+
   echo "[nextcloud] Launching background installer..."
-  
+
   # Run installation in background (won't block boot)
   (
     sleep 5  # Wait for nginx to start
-    
+
     echo "[nextcloud-bg] Starting fresh installation..."
-    
+
     # Wait for DB
     for i in 1 2 3 4 5 6 7 8 9 10; do
       if "$PHP_BIN" -r "new PDO('pgsql:host=${DB_HOST};port=${DB_PORT};dbname=${DB_NAME}', '${DB_USER}', '${DB_PASS}');" 2>/dev/null; then
@@ -409,7 +416,7 @@ else
       fi
       sleep 2
     done
-    
+
     # Run maintenance:install to create tables
     echo "[nextcloud-bg] Running maintenance:install..."
     "$PHP_BIN" /app/occ maintenance:install \
@@ -422,7 +429,7 @@ else
       --admin-pass "${NEXTCLOUD_ADMIN_PASSWORD:-admin}" \
       --data-dir "$DATA_DIR" \
       --no-interaction 2>&1 || echo "[nextcloud-bg] install command finished"
-    
+
     # Ensure config has correct values
     "$PHP_BIN" /app/occ config:system:set trusted_domains 0 --value="$DOMAIN" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set overwriteprotocol --value="https" 2>/dev/null || true
@@ -465,7 +472,7 @@ else
     configure_user_oidc
     enable_logreader_if_present
     provision_user_oidc_provider
-    
+
     echo "[nextcloud-bg] =========================================="
     echo "[nextcloud-bg] IMPORTANT: Save these secrets for redeployment!"
     echo "[nextcloud-bg] =========================================="
@@ -475,11 +482,11 @@ else
     echo "[nextcloud-bg]   NEXTCLOUD_PASSWORDSALT"
     echo "[nextcloud-bg]   NEXTCLOUD_SECRET"
     echo "[nextcloud-bg] =========================================="
-    
+
     echo "[nextcloud-bg] Installation complete with S3 storage!"
-    
+
   ) >> /tmp/nextcloud-bg.log 2>&1 &
-  
+
   echo "[nextcloud] Background installer started (PID: $!)"
   echo "[nextcloud] Bootstrap done (fresh install)"
 fi
