@@ -99,7 +99,7 @@ OIDC_MAPPING_UID=sub
 
 Le buildpack pré-installe l'application [`user_oidc`](https://github.com/nextcloud/user_oidc) et l'active automatiquement au démarrage.
 
-Les réglages suivants sont appliqués à chaque démarrage :
+Ces réglages sont écrits dans `config.php` sous `$CONFIG['user_oidc']` (reconstruction au redéploiement ; fusion après `maintenance:install` pour une nouvelle instance) — c’est ce que lit `user_oidc` via la config système :
 
 | Clé | Valeur | Effet |
 |-----|--------|-------|

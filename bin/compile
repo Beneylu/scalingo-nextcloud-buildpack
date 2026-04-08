@@ -231,9 +231,7 @@ configure_user_oidc() {
     echo "[nextcloud] WARNING: Could not enable user_oidc app, skipping"
     return 0
   fi
-  "$PHP_BIN" /app/occ config:app:set user_oidc enable_default_claims --type=boolean --value=false 2>/dev/null || true
-  "$PHP_BIN" /app/occ config:app:set user_oidc enrich_login_id_token_with_userinfo --type=boolean --value=true 2>/dev/null || true
-  "$PHP_BIN" /app/occ config:app:set user_oidc send_userinfo_claims --type=boolean --value=false 2>/dev/null || true
+  # Réglages OIDC claims : getSystemValue('user_oidc') — définis dans config.php (redéploiement + bloc PHP fresh install).
   echo "[nextcloud] user_oidc configured"
 }
 
@@ -327,6 +325,11 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
       'autocreate' => false,
     ),
   ),
+  'user_oidc' => array(
+    'enable_default_claims' => false,
+    'enrich_login_id_token_with_userinfo' => true,
+    'send_userinfo_claims' => false,
+  ),
 );
 PHPCFG
   
@@ -379,11 +382,9 @@ else
     "$PHP_BIN" /app/occ config:system:set log_type --value="errorlog" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
-    configure_user_oidc
-    provision_user_oidc_provider
-    
-    # Add S3 objectstore configuration
-    echo "[nextcloud-bg] Configuring S3 storage..."
+
+    # S3 + user_oidc dans config.php avant activation OIDC (getSystemValue('user_oidc'))
+    echo "[nextcloud-bg] Configuring S3 storage and user_oidc in config.php..."
     "$PHP_BIN" -r "
       \$configFile = '${CONFIG_FILE}';
       require \$configFile;
@@ -401,9 +402,17 @@ else
           'autocreate' => false,
         ],
       ];
+      \$CONFIG['user_oidc'] = [
+        'enable_default_claims' => false,
+        'enrich_login_id_token_with_userinfo' => true,
+        'send_userinfo_claims' => false,
+      ];
       file_put_contents(\$configFile, '<?php' . PHP_EOL . '\$CONFIG = ' . var_export(\$CONFIG, true) . ';' . PHP_EOL);
-      echo 'S3 configuration added to config.php';
+      echo 'S3 and user_oidc configuration added to config.php';
     " 2>&1 || echo "[nextcloud-bg] WARNING: Failed to add S3 config"
+
+    configure_user_oidc
+    provision_user_oidc_provider
     
     echo "[nextcloud-bg] =========================================="
     echo "[nextcloud-bg] IMPORTANT: Save these secrets for redeployment!"
