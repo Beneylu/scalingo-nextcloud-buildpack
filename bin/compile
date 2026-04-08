@@ -151,6 +151,13 @@ CONFIG_FILE="$CONFIG_DIR/config.php"
 
 mkdir -p "$DATA_DIR"
 echo "# Nextcloud data directory" > "$DATA_DIR/.ncdata"
+# PHP-FPM n’exécute pas le bootstrap : le datadir doit être writable par l’utilisateur web, sinon
+# log_type=file ne peut pas créer nextcloud.log et tout part en stderr → Journalisation / Log Reader vides.
+chmod 0777 "$DATA_DIR"
+touch "$DATA_DIR/nextcloud.log" 2>/dev/null || true
+chmod 0666 "$DATA_DIR/nextcloud.log" 2>/dev/null || true
+
+PHP_BIN="/app/vendor/php/bin/php"
 
 # ============================================
 # S3 Configuration (REQUIRED)
@@ -176,7 +183,11 @@ echo "[nextcloud] S3 bucket: $S3_BUCKET @ $S3_HOSTNAME ($S3_REGION)"
 
 # Check if already installed
 if [[ -f "$CONFIG_FILE" ]] && grep -q "'installed' => true" "$CONFIG_FILE" 2>/dev/null; then
-  echo "[nextcloud] Already installed, skipping bootstrap"
+  echo "[nextcloud] Already installed, syncing log settings (file + loglevel for Log Reader / Journalisation)"
+  "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:system:set loglevel --value="3" --type=integer 2>/dev/null || true
+  echo "[nextcloud] Skipping bootstrap"
   return 0 2>/dev/null || exit 0
 fi
 

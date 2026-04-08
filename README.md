@@ -99,7 +99,9 @@ OIDC_MAPPING_UID=sub
 
 - **`log_type`** : `file` — fichier **`/tmp/nextcloud-data/nextcloud.log`** (même répertoire que le datadir local du buildpack).
 - **`loglevel`** : `3` (erreurs / fatal), pour limiter le bruit dans les logs plateforme.
-- L’app **Log Reader** (`logreader`) peut lire ce fichier depuis l’administration Nextcloud.
+- Au **démarrage du conteneur**, le datadir reçoit `chmod 0777` et le fichier journal `0666` pour que **PHP-FPM** (pas le script bootstrap) puisse écrire ; sans cela, Nextcloud retombe sur `error_log` et l’UI **Journalisation** reste vide.
+- À chaque boot, si l’instance est déjà installée, les clés **`log_type` / `logfile` / `loglevel`** sont resynchronisées via `occ` (anciennes instances encore en `errorlog` sont corrigées).
+- Installe l’app **Log Reader** (`logreader`) depuis le store si tu utilises cette interface plutôt que la page native **Administration → Journalisation**.
 
 ## Authentification OIDC
 
