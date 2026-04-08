@@ -308,8 +308,9 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
   'overwriteprotocol' => 'https',
   'installed' => true,
   'maintenance' => false,
-  'loglevel' => 0,
-  'log_type' => 'errorlog',
+  'loglevel' => 3,
+  'log_type' => 'file',
+  'logfile' => '${DATA_DIR}/nextcloud.log',
   'version' => '32.0.5.0',
   'objectstore' => array(
     'class' => '\\\\OC\\\\Files\\\\ObjectStore\\\\S3',
@@ -379,8 +380,9 @@ else
     # Ensure config has correct values
     "$PHP_BIN" /app/occ config:system:set trusted_domains 0 --value="$DOMAIN" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set overwriteprotocol --value="https" 2>/dev/null || true
-    "$PHP_BIN" /app/occ config:system:set log_type --value="errorlog" 2>/dev/null || true
-    "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set loglevel --value="3" --type=integer 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
 
     # S3 + user_oidc dans config.php avant activation OIDC (getSystemValue('user_oidc'))
@@ -407,6 +409,9 @@ else
         'enrich_login_id_token_with_userinfo' => true,
         'send_userinfo_claims' => false,
       ];
+      \$CONFIG['log_type'] = 'file';
+      \$CONFIG['logfile'] = '${DATA_DIR}/nextcloud.log';
+      \$CONFIG['loglevel'] = 3;
       file_put_contents(\$configFile, '<?php' . PHP_EOL . '\$CONFIG = ' . var_export(\$CONFIG, true) . ';' . PHP_EOL);
       echo 'S3 and user_oidc configuration added to config.php';
     " 2>&1 || echo "[nextcloud-bg] WARNING: Failed to add S3 config"

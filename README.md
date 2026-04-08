@@ -95,6 +95,12 @@ OIDC_MAPPING_UID=sub
    - Création des tables si nécessaire
    - Activation et configuration de `user_oidc`
 
+## Journaux
+
+- **`log_type`** : `file` — fichier **`/tmp/nextcloud-data/nextcloud.log`** (même répertoire que le datadir local du buildpack).
+- **`loglevel`** : `3` (erreurs / fatal), pour limiter le bruit dans les logs plateforme.
+- L’app **Log Reader** (`logreader`) peut lire ce fichier depuis l’administration Nextcloud.
+
 ## Authentification OIDC
 
 Le buildpack pré-installe l'application [`user_oidc`](https://github.com/nextcloud/user_oidc) et l'active automatiquement au démarrage.
