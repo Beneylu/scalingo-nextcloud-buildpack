@@ -99,9 +99,10 @@ OIDC_MAPPING_UID=sub
 
 - **`log_type`** : `file` — fichier **`/tmp/nextcloud-data/nextcloud.log`** (même répertoire que le datadir local du buildpack).
 - **`loglevel`** : `0` (debug) pour le diagnostic et la **Journalisation** ; repasse à `2`–`3` en production pour limiter le bruit.
-- Au **démarrage du conteneur**, le datadir reçoit `chmod 0777` et le fichier journal `0666` pour que **PHP-FPM** (pas le script bootstrap) puisse écrire ; sans cela, Nextcloud retombe sur `error_log` et l’UI **Journalisation** reste vide.
-- À chaque boot, si l’instance est déjà installée, les clés **`log_type` / `logfile` / `loglevel`** sont resynchronisées via `occ` (anciennes instances encore en `errorlog` sont corrigées).
-- Installe l’app **Log Reader** (`logreader`) depuis le store si tu utilises cette interface plutôt que la page native **Administration → Journalisation**.
+- Avec **`log_type=file`**, Nextcloud **n’envoie plus** les lignes applicatives sur **stderr** : les logs **Scalingo** ne montrent plus les messages `[nextcloud][...]` tant qu’on ne duplique pas le fichier. Le bootstrap lance par défaut un **`tail -F`** de `nextcloud.log` vers **stderr** (préfixe `[nextcloud-log]`). Désactiver ce miroir : **`NEXTCLOUD_MIRROR_LOG_TO_STDERR=0`**.
+- Au **démarrage du conteneur**, le datadir reçoit `chmod 0777` et le fichier journal `0666` pour que **PHP-FPM** puisse écrire.
+- À chaque boot, si l’instance est déjà installée, les clés **`log_type` / `logfile` / `loglevel`** sont resynchronisées via `occ`.
+- L’app **`logreader`** est incluse dans l’archive Nextcloud ; le bootstrap tente **`occ app:enable logreader`**. Si tu avais une version cassée (ex. `*-dev`) installée depuis le store, désinstalle-la et laisse la version **fournie avec le serveur**, ou réinstalle depuis le store une release stable compatible ta version de Nextcloud.
 
 ## Authentification OIDC
 

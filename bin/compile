@@ -159,82 +159,33 @@ chmod 0666 "$DATA_DIR/nextcloud.log" 2>/dev/null || true
 
 PHP_BIN="/app/vendor/php/bin/php"
 
-# ============================================
-# S3 Configuration (REQUIRED)
-# ============================================
-echo "[nextcloud] Checking S3 configuration..."
-
-S3_BUCKET="${SCALEWAY_S3_BUCKET:-}"
-S3_KEY="${SCALEWAY_ACCESS_KEY:-}"
-S3_SECRET="${SCALEWAY_SECRET_KEY:-}"
-S3_REGION="${SCALEWAY_S3_REGION:-fr-par}"
-S3_HOSTNAME="${SCALEWAY_S3_HOSTNAME:-s3.fr-par.scw.cloud}"
-
-if [[ -z "$S3_BUCKET" ]] || [[ -z "$S3_KEY" ]] || [[ -z "$S3_SECRET" ]]; then
-  echo "[nextcloud] ERROR: S3 configuration is REQUIRED"
-  echo "[nextcloud] Missing variables:"
-  [[ -z "$S3_BUCKET" ]] && echo "[nextcloud]   - SCALEWAY_S3_BUCKET"
-  [[ -z "$S3_KEY" ]] && echo "[nextcloud]   - SCALEWAY_ACCESS_KEY"
-  [[ -z "$S3_SECRET" ]] && echo "[nextcloud]   - SCALEWAY_SECRET_KEY"
-  return 1 2>/dev/null || exit 1
-fi
-
-echo "[nextcloud] S3 bucket: $S3_BUCKET @ $S3_HOSTNAME ($S3_REGION)"
-
-# Check if already installed
-if [[ -f "$CONFIG_FILE" ]] && grep -q "'installed' => true" "$CONFIG_FILE" 2>/dev/null; then
-  echo "[nextcloud] Already installed, syncing log settings (file + loglevel for Log Reader / Journalisation)"
-  "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
-  "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
-  "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
-  echo "[nextcloud] Skipping bootstrap"
-  return 0 2>/dev/null || exit 0
-fi
-
-echo "[nextcloud] Config not found, checking database..."
-
-# Get database URL
-export DB_URL="${DATABASE_URL:-${SCALINGO_POSTGRESQL_URL:-}}"
-if [[ -z "$DB_URL" ]]; then
-  echo "[nextcloud] ERROR: No database URL"
-  return 1 2>/dev/null || exit 1
-fi
-
-# Parse database URL
-PHP_BIN="/app/vendor/php/bin/php"
-
-eval "$("$PHP_BIN" -r '
-  $u = getenv("DB_URL");
-  if (!$u) { echo "echo ERROR_NO_URL; exit 1;"; exit(1); }
-  $p = parse_url($u);
-  if (!$p || empty($p["host"])) { echo "echo ERROR_PARSE; exit 1;"; exit(1); }
-  echo "DB_HOST=" . escapeshellarg($p["host"] ?? "") . "\n";
-  echo "DB_PORT=" . escapeshellarg((string)($p["port"] ?? 5432)) . "\n";
-  echo "DB_USER=" . escapeshellarg($p["user"] ?? "") . "\n";
-  echo "DB_PASS=" . escapeshellarg($p["pass"] ?? "") . "\n";
-  echo "DB_NAME=" . escapeshellarg(ltrim($p["path"] ?? "", "/")) . "\n";
-')" || {
-  echo "[nextcloud] ERROR: Failed to parse DB URL"
-  return 1 2>/dev/null || exit 1
+# Duplique nextcloud.log vers stderr pour les logs Scalingo (log_type=file n’utilise plus errorlog).
+# Désactiver : NEXTCLOUD_MIRROR_LOG_TO_STDERR=0
+start_nextcloud_log_mirror() {
+  [[ "${NEXTCLOUD_MIRROR_LOG_TO_STDERR:-1}" == "1" ]] || return 0
+  local lf="$DATA_DIR/nextcloud.log"
+  local pf="/tmp/nextcloud-log-mirror.pid"
+  touch "$lf" 2>/dev/null || true
+  if [[ -f "$pf" ]]; then
+    local oldpid
+    oldpid=$(cat "$pf" 2>/dev/null) || true
+    if [[ -n "${oldpid:-}" ]] && kill -0 "$oldpid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  (
+    tail -n0 -F "$lf" 2>/dev/null | while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '%s\n' "[nextcloud-log] $line" >&2
+    done
+  ) &
+  echo $! > "$pf"
+  echo "[nextcloud] Mirroring ${lf} to stderr (Scalingo). Disable: NEXTCLOUD_MIRROR_LOG_TO_STDERR=0" >&2
 }
 
-echo "[nextcloud] Database: $DB_NAME @ $DB_HOST:$DB_PORT"
-DOMAIN="${NEXTCLOUD_TRUSTED_DOMAIN:-localhost}"
-
-# Check if tables exist (means previous installation)
-echo "[nextcloud] Checking if Nextcloud tables exist..."
-HAS_TABLES=$("$PHP_BIN" -r "
-  try {
-    \$pdo = new PDO('pgsql:host=${DB_HOST};port=${DB_PORT};dbname=${DB_NAME};sslmode=require', '${DB_USER}', '${DB_PASS}');
-    \$result = \$pdo->query(\"SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='oc_users' LIMIT 1\");
-    echo \$result->fetchColumn() ? 'yes' : 'no';
-  } catch (Exception \$e) { echo 'no'; }
-" 2>/dev/null || echo "no")
-
-echo "[nextcloud] Tables exist: $HAS_TABLES"
+start_nextcloud_log_mirror
 
 # ============================================
-# user_oidc configuration
+# user_oidc / logreader (définis avant le court-circuit « déjà installé »)
 # ============================================
 configure_user_oidc() {
   echo "[nextcloud] Enabling and configuring user_oidc app..."
@@ -246,9 +197,14 @@ configure_user_oidc() {
   echo "[nextcloud] user_oidc configured"
 }
 
-# ============================================
-# OIDC provider provisioning (optional)
-# ============================================
+enable_logreader_if_present() {
+  if [[ -f /app/apps/logreader/appinfo/info.xml ]]; then
+    if "$PHP_BIN" /app/occ app:enable logreader 2>/dev/null; then
+      echo "[nextcloud] logreader enabled"
+    fi
+  fi
+}
+
 provision_user_oidc_provider() {
   local identifier="${OIDC_PROVIDER_IDENTIFIER:-}"
   local client_id="${OIDC_CLIENT_ID:-}"
@@ -284,6 +240,80 @@ provision_user_oidc_provider() {
     echo "[nextcloud] WARNING: Echec du provisioning OIDC provider (user_oidc disponible ?)"
   fi
 }
+
+# ============================================
+# S3 Configuration (REQUIRED)
+# ============================================
+echo "[nextcloud] Checking S3 configuration..."
+
+S3_BUCKET="${SCALEWAY_S3_BUCKET:-}"
+S3_KEY="${SCALEWAY_ACCESS_KEY:-}"
+S3_SECRET="${SCALEWAY_SECRET_KEY:-}"
+S3_REGION="${SCALEWAY_S3_REGION:-fr-par}"
+S3_HOSTNAME="${SCALEWAY_S3_HOSTNAME:-s3.fr-par.scw.cloud}"
+
+if [[ -z "$S3_BUCKET" ]] || [[ -z "$S3_KEY" ]] || [[ -z "$S3_SECRET" ]]; then
+  echo "[nextcloud] ERROR: S3 configuration is REQUIRED"
+  echo "[nextcloud] Missing variables:"
+  [[ -z "$S3_BUCKET" ]] && echo "[nextcloud]   - SCALEWAY_S3_BUCKET"
+  [[ -z "$S3_KEY" ]] && echo "[nextcloud]   - SCALEWAY_ACCESS_KEY"
+  [[ -z "$S3_SECRET" ]] && echo "[nextcloud]   - SCALEWAY_SECRET_KEY"
+  return 1 2>/dev/null || exit 1
+fi
+
+echo "[nextcloud] S3 bucket: $S3_BUCKET @ $S3_HOSTNAME ($S3_REGION)"
+
+# Check if already installed
+if [[ -f "$CONFIG_FILE" ]] && grep -q "'installed' => true" "$CONFIG_FILE" 2>/dev/null; then
+  echo "[nextcloud] Already installed, syncing log settings (file + loglevel for Log Reader / Journalisation)"
+  "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
+  enable_logreader_if_present
+  echo "[nextcloud] Skipping bootstrap"
+  return 0 2>/dev/null || exit 0
+fi
+
+echo "[nextcloud] Config not found, checking database..."
+
+# Get database URL
+export DB_URL="${DATABASE_URL:-${SCALINGO_POSTGRESQL_URL:-}}"
+if [[ -z "$DB_URL" ]]; then
+  echo "[nextcloud] ERROR: No database URL"
+  return 1 2>/dev/null || exit 1
+fi
+
+# Parse database URL
+
+eval "$("$PHP_BIN" -r '
+  $u = getenv("DB_URL");
+  if (!$u) { echo "echo ERROR_NO_URL; exit 1;"; exit(1); }
+  $p = parse_url($u);
+  if (!$p || empty($p["host"])) { echo "echo ERROR_PARSE; exit 1;"; exit(1); }
+  echo "DB_HOST=" . escapeshellarg($p["host"] ?? "") . "\n";
+  echo "DB_PORT=" . escapeshellarg((string)($p["port"] ?? 5432)) . "\n";
+  echo "DB_USER=" . escapeshellarg($p["user"] ?? "") . "\n";
+  echo "DB_PASS=" . escapeshellarg($p["pass"] ?? "") . "\n";
+  echo "DB_NAME=" . escapeshellarg(ltrim($p["path"] ?? "", "/")) . "\n";
+')" || {
+  echo "[nextcloud] ERROR: Failed to parse DB URL"
+  return 1 2>/dev/null || exit 1
+}
+
+echo "[nextcloud] Database: $DB_NAME @ $DB_HOST:$DB_PORT"
+DOMAIN="${NEXTCLOUD_TRUSTED_DOMAIN:-localhost}"
+
+# Check if tables exist (means previous installation)
+echo "[nextcloud] Checking if Nextcloud tables exist..."
+HAS_TABLES=$("$PHP_BIN" -r "
+  try {
+    \$pdo = new PDO('pgsql:host=${DB_HOST};port=${DB_PORT};dbname=${DB_NAME};sslmode=require', '${DB_USER}', '${DB_PASS}');
+    \$result = \$pdo->query(\"SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='oc_users' LIMIT 1\");
+    echo \$result->fetchColumn() ? 'yes' : 'no';
+  } catch (Exception \$e) { echo 'no'; }
+" 2>/dev/null || echo "no")
+
+echo "[nextcloud] Tables exist: $HAS_TABLES"
 
 if [[ "$HAS_TABLES" == "yes" ]]; then
   # REDEPLOYMENT: Tables exist, rebuild config.php from secrets
@@ -347,6 +377,7 @@ PHPCFG
   
   echo "[nextcloud] Config rebuilt with S3 storage!"
   configure_user_oidc
+  enable_logreader_if_present
   provision_user_oidc_provider
   echo "[nextcloud] Bootstrap done (redeployment)"
 
@@ -428,6 +459,7 @@ else
     " 2>&1 || echo "[nextcloud-bg] WARNING: Failed to add S3 config"
 
     configure_user_oidc
+    enable_logreader_if_present
     provision_user_oidc_provider
     
     echo "[nextcloud-bg] =========================================="
