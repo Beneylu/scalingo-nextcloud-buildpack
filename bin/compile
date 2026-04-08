@@ -198,10 +198,14 @@ configure_user_oidc() {
 }
 
 enable_logreader_if_present() {
-  if [[ -f /app/apps/logreader/appinfo/info.xml ]]; then
-    if "$PHP_BIN" /app/occ app:enable logreader 2>/dev/null; then
-      echo "[nextcloud] logreader enabled"
-    fi
+  if [[ ! -f /app/apps/logreader/appinfo/info.xml ]]; then
+    echo "[nextcloud] WARNING: app logreader absente sous /app/apps/logreader — la page Journalisation ne fonctionnera pas sans cette app."
+    return 0
+  fi
+  if "$PHP_BIN" /app/occ app:enable logreader; then
+    echo "[nextcloud] logreader enabled"
+  else
+    echo "[nextcloud] WARNING: occ app:enable logreader a échoué — vérifiez les logs de démarrage et exécutez occ manuellement si besoin."
   fi
 }
 
