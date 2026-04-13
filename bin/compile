@@ -280,6 +280,7 @@ if [[ -f "$CONFIG_FILE" ]] && grep -q "'installed' => true" "$CONFIG_FILE" 2>/de
   "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
   "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
   "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:system:set skeletondirectory --value="" 2>/dev/null || true
   enable_logreader_if_present
   echo "[nextcloud] Skipping bootstrap"
   return 0 2>/dev/null || exit 0
@@ -383,6 +384,7 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
     'enrich_login_id_token_with_userinfo' => true,
     'send_userinfo_claims' => false,
   ),
+  'skeletondirectory' => '',
 );
 PHPCFG
 
@@ -436,6 +438,7 @@ else
     "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set skeletondirectory --value="" 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
 
     # S3 + user_oidc dans config.php avant activation OIDC (getSystemValue('user_oidc'))
@@ -465,6 +468,7 @@ else
       \$CONFIG['log_type'] = 'file';
       \$CONFIG['logfile'] = '${DATA_DIR}/nextcloud.log';
       \$CONFIG['loglevel'] = 0;
+      \$CONFIG['skeletondirectory'] = '';
       file_put_contents(\$configFile, '<?php' . PHP_EOL . '\$CONFIG = ' . var_export(\$CONFIG, true) . ';' . PHP_EOL);
       echo 'S3 and user_oidc configuration added to config.php';
     " 2>&1 || echo "[nextcloud-bg] WARNING: Failed to add S3 config"
