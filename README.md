@@ -95,6 +95,22 @@ OIDC_MAPPING_UID=sub
    - Création des tables si nécessaire
    - Activation et configuration de `user_oidc`
 
+## Profils et données personnelles (périmètre)
+
+Ce buildpack peut **réduire l’exposition** des profils Nextcloud (interface « Informations personnelles » / profil public) et limiter l’appel **userinfo** côté OIDC. Ce n’est **pas** un interrupteur RGPD complet : la **fédération**, le **serveur de recherche** (lookup) et d’autres réglages (`account_manager.default_property_scope`, etc.) restent à traiter au besoin dans la [doc officielle profils](https://docs.nextcloud.com/server/stable/admin_manual/configuration_user/profile_configuration.html) et la config administrateur.
+
+| Variable | Valeurs reconnues | Effet |
+|----------|-------------------|--------|
+| `NEXTCLOUD_PROFILE_ENABLED` | `0`, `false`, `no` | Désactive les profils pour toute l’instance (`profile.enabled` via `occ` et `config.php` au redéploiement). |
+| `NEXTCLOUD_PROFILE_ENABLED` | `1`, `true`, `yes` | Supprime la clé système `profile.enabled` (retour au comportement par défaut Nextcloud). |
+| _(non définie)_ | — | Ne modifie pas `profile.enabled`. |
+| `NEXTCLOUD_PROFILE_ENABLED_BY_DEFAULT` | `0`, `false`, `no` | `occ config:app:set settings profile_enabled_by_default --value=0` (nouveaux comptes). |
+| `NEXTCLOUD_PROFILE_ENABLED_BY_DEFAULT` | `1`, `true`, `yes` | Remet la valeur applicative à `1`. |
+| `NEXTCLOUD_OIDC_ENRICH_USERINFO` | `0`, `false`, `no` | Met `enrich_login_id_token_with_userinfo` à `false` dans `$CONFIG['user_oidc']` (pas d’enrichissement via l’endpoint userinfo à la connexion). |
+| _(non définie)_ | — | Conserve `enrich_login_id_token_with_userinfo` à `true` (comportement historique du buildpack). |
+
+À chaque boot, si l’instance est déjà installée, `apply_nextcloud_profile_privacy_settings` resynchronise `NEXTCLOUD_PROFILE_*` via `occ` (chemins « déjà installé » et post-install).
+
 ## Journaux
 
 - **`log_type`** : `file` — fichier **`/tmp/nextcloud-data/nextcloud.log`** (même répertoire que le datadir local du buildpack).
@@ -113,7 +129,7 @@ Ces réglages sont écrits dans `config.php` sous `$CONFIG['user_oidc']` (recons
 | Clé | Valeur | Effet |
 |-----|--------|-------|
 | `enable_default_claims` | `false` | Désactive le mapping automatique des claims par défaut |
-| `enrich_login_id_token_with_userinfo` | `true` | Enrichit le token avec les infos de l'endpoint userinfo |
+| `enrich_login_id_token_with_userinfo` | `true` (défaut), ou `false` si `NEXTCLOUD_OIDC_ENRICH_USERINFO` vaut `0` / `false` / `no` | Si `true`, enrichit le contexte de connexion via l’endpoint userinfo ; si `false`, pas d’appel userinfo à cette fin |
 | `send_userinfo_claims` | `false` | Ne retransmet pas les claims userinfo lors des requêtes sortantes |
 
 > Si les variables `OIDC_PROVIDER_IDENTIFIER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` et `OIDC_DISCOVERY_URI` sont définies,

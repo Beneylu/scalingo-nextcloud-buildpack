@@ -252,6 +252,31 @@ provision_user_oidc_provider() {
   fi
 }
 
+# Profils Nextcloud / visibilité par défaut (voir README : NEXTCLOUD_PROFILE_*).
+# OIDC : enrichissement userinfo piloté par NEXTCLOUD_OIDC_ENRICH_USERINFO.
+apply_nextcloud_profile_privacy_settings() {
+  if [[ ! -f "$CONFIG_FILE" ]] || ! grep -q "'installed' => true" "$CONFIG_FILE" 2>/dev/null; then
+    return 0
+  fi
+  local pe="${NEXTCLOUD_PROFILE_ENABLED:-}"
+  if [[ "$pe" == "0" ]] || [[ "$pe" == "false" ]] || [[ "$pe" == "no" ]]; then
+    echo "[nextcloud] Profils utilisateur désactivés globalement (NEXTCLOUD_PROFILE_ENABLED=$pe)"
+    "$PHP_BIN" /app/occ config:system:set profile.enabled --type=boolean --value=false 2>/dev/null \
+      || echo "[nextcloud] WARNING: occ config:system:set profile.enabled=false a échoué"
+  elif [[ "$pe" == "1" ]] || [[ "$pe" == "true" ]] || [[ "$pe" == "yes" ]]; then
+    "$PHP_BIN" /app/occ config:system:delete profile.enabled 2>/dev/null || true
+  fi
+
+  local ped="${NEXTCLOUD_PROFILE_ENABLED_BY_DEFAULT:-}"
+  if [[ "$ped" == "0" ]] || [[ "$ped" == "false" ]] || [[ "$ped" == "no" ]]; then
+    echo "[nextcloud] Profil désactivé par défaut pour les nouveaux comptes (NEXTCLOUD_PROFILE_ENABLED_BY_DEFAULT=$ped)"
+    "$PHP_BIN" /app/occ config:app:set settings profile_enabled_by_default --value="0" 2>/dev/null \
+      || echo "[nextcloud] WARNING: occ profile_enabled_by_default=0 a échoué"
+  elif [[ "$ped" == "1" ]] || [[ "$ped" == "true" ]] || [[ "$ped" == "yes" ]]; then
+    "$PHP_BIN" /app/occ config:app:set settings profile_enabled_by_default --value="1" 2>/dev/null || true
+  fi
+}
+
 # ============================================
 # S3 Configuration (REQUIRED)
 # ============================================
@@ -276,12 +301,14 @@ echo "[nextcloud] S3 bucket: $S3_BUCKET @ $S3_HOSTNAME ($S3_REGION)"
 
 # Check if already installed
 if [[ -f "$CONFIG_FILE" ]] && grep -q "'installed' => true" "$CONFIG_FILE" 2>/dev/null; then
-  echo "[nextcloud] Already installed, syncing log settings (file + loglevel for Log Reader / Journalisation)"
+  echo "[nextcloud] Already installed, syncing log settings (file + loglevel for Log Reader / Journalisation) and session_lifetime (1 h)"
   "$PHP_BIN" /app/occ config:system:set log_type --value="file" 2>/dev/null || true
   "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
   "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
   "$PHP_BIN" /app/occ config:system:set skeletondirectory --value="" 2>/dev/null || true
+  "$PHP_BIN" /app/occ config:system:set session_lifetime --type=integer --value=3600 2>/dev/null || true
   enable_logreader_if_present
+  apply_nextcloud_profile_privacy_settings
   echo "[nextcloud] Skipping bootstrap"
   return 0 2>/dev/null || exit 0
 fi
@@ -342,6 +369,15 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
   # Generate instanceid if not provided
   INSTANCEID="${NEXTCLOUD_INSTANCEID:-oc$(head /dev/urandom | tr -dc 'a-z0-9' | head -c 10)}"
 
+  PROFILE_LINE=""
+  if [[ "${NEXTCLOUD_PROFILE_ENABLED:-}" == "0" ]] || [[ "${NEXTCLOUD_PROFILE_ENABLED:-}" == "false" ]] || [[ "${NEXTCLOUD_PROFILE_ENABLED:-}" == "no" ]]; then
+    PROFILE_LINE="  'profile.enabled' => false,"
+  fi
+  OIDC_ENRICH_PHP="true"
+  if [[ "${NEXTCLOUD_OIDC_ENRICH_USERINFO:-1}" == "0" ]] || [[ "${NEXTCLOUD_OIDC_ENRICH_USERINFO:-}" == "false" ]] || [[ "${NEXTCLOUD_OIDC_ENRICH_USERINFO:-}" == "no" ]]; then
+    OIDC_ENRICH_PHP="false"
+  fi
+
   echo "[nextcloud] Rebuilding config.php from secrets..."
   cat > "$CONFIG_FILE" <<PHPCFG
 <?php
@@ -381,14 +417,17 @@ if [[ "$HAS_TABLES" == "yes" ]]; then
   ),
   'user_oidc' => array(
     'enable_default_claims' => false,
-    'enrich_login_id_token_with_userinfo' => true,
+    'enrich_login_id_token_with_userinfo' => ${OIDC_ENRICH_PHP},
     'send_userinfo_claims' => false,
   ),
+  ${PROFILE_LINE}
   'skeletondirectory' => '',
+  'session_lifetime' => 3600,
 );
 PHPCFG
 
   echo "[nextcloud] Config rebuilt with S3 storage!"
+  apply_nextcloud_profile_privacy_settings
   configure_user_oidc
   enable_logreader_if_present
   provision_user_oidc_provider
@@ -439,6 +478,7 @@ else
     "$PHP_BIN" /app/occ config:system:set logfile --value="$DATA_DIR/nextcloud.log" 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set loglevel --value="0" --type=integer 2>/dev/null || true
     "$PHP_BIN" /app/occ config:system:set skeletondirectory --value="" 2>/dev/null || true
+    "$PHP_BIN" /app/occ config:system:set session_lifetime --type=integer --value=3600 2>/dev/null || true
     "$PHP_BIN" /app/occ maintenance:mode --off 2>/dev/null || true
 
     # S3 + user_oidc dans config.php avant activation OIDC (getSystemValue('user_oidc'))
@@ -460,19 +500,30 @@ else
           'autocreate' => false,
         ],
       ];
+      \$enrich = true;
+      \$enrichEnv = getenv('NEXTCLOUD_OIDC_ENRICH_USERINFO');
+      if (\$enrichEnv !== false && \$enrichEnv !== '' && in_array(strtolower(\$enrichEnv), ['0', 'false', 'no'], true)) {
+        \$enrich = false;
+      }
       \$CONFIG['user_oidc'] = [
         'enable_default_claims' => false,
-        'enrich_login_id_token_with_userinfo' => true,
+        'enrich_login_id_token_with_userinfo' => \$enrich,
         'send_userinfo_claims' => false,
       ];
+      \$pe = getenv('NEXTCLOUD_PROFILE_ENABLED');
+      if (\$pe !== false && \$pe !== '' && in_array(strtolower(\$pe), ['0', 'false', 'no'], true)) {
+        \$CONFIG['profile.enabled'] = false;
+      }
       \$CONFIG['log_type'] = 'file';
       \$CONFIG['logfile'] = '${DATA_DIR}/nextcloud.log';
       \$CONFIG['loglevel'] = 0;
       \$CONFIG['skeletondirectory'] = '';
+      \$CONFIG['session_lifetime'] = 3600;
       file_put_contents(\$configFile, '<?php' . PHP_EOL . '\$CONFIG = ' . var_export(\$CONFIG, true) . ';' . PHP_EOL);
       echo 'S3 and user_oidc configuration added to config.php';
     " 2>&1 || echo "[nextcloud-bg] WARNING: Failed to add S3 config"
 
+    apply_nextcloud_profile_privacy_settings
     configure_user_oidc
     enable_logreader_if_present
     provision_user_oidc_provider
